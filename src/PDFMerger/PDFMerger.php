@@ -28,20 +28,21 @@ use setasign\Fpdi\Fpdi;
 
 class PDFMerger
 {
-    private $_files;    //['form.pdf']  ["1,2,4, 5-19"]
-    private $_fpdi;
+    private array $_files = [];
 
     /**
      * Add a PDF for inclusion in the merge with a valid file path. Pages should be formatted: 1,3,6, 12-16.
-     * @param $filepath
-     * @param $pages
-     * @return void
+     * @param string $filepath
+     * @param string|int $pages
+     * @param string|null $orientation
+     * @return PDFMerger
+     * @throws Exception
      */
     public function addPDF($filepath, $pages = 'all', $orientation = null)
     {
         if (file_exists($filepath)) {
             if (strtolower($pages) != 'all') {
-                $pages = $this->_rewritepages($pages);
+                $pages = $this->_rewritePages($pages);
             }
 
             $this->_files[] = array($filepath, $pages, $orientation);
@@ -54,12 +55,12 @@ class PDFMerger
 
     /**
      * Merges your provided PDFs and outputs to specified location.
-     * @param $outputmode
-     * @param $outputname
-     * @param $orientation
-     * @return PDF
+     * @param string $outMode
+     * @param string $outPath
+     * @param string $orientation
+     * @return PDFMerger|bool|string
      */
-    public function merge($outputmode = 'browser', $outputpath = 'newfile.pdf', $orientation = 'A')
+    public function merge(?string $outMode = 'browser', ?string $outPath = 'newfile.pdf', ?string $orientation = 'A')
     {
         if (!isset($this->_files) || !is_array($this->_files)) {
             throw new Exception("No PDFs to merge.");
@@ -70,96 +71,75 @@ class PDFMerger
         // merger operations
         foreach ($this->_files as $file) {
             $filename  = $file[0];
-            $filepages = $file[1];
-            $fileorientation = (!is_null($file[2])) ? $file[2] : $orientation;
+            $filePages = $file[1];
+            $fileOrientation = (!is_null($file[2])) ? $file[2] : $orientation;
 
             $count = $fpdi->setSourceFile($filename);
 
             //add the pages
-            if ($filepages == 'all') {
+            if ($filePages == 'all') {
                 for ($i=1; $i<=$count; $i++) {
                     $template   = $fpdi->importPage($i);
-                    $size       = $fpdi->getTemplateSize($template);
-                    $pageOrientation = ($size['width'] > $size['height']) ? 'L' : 'P';  // Determine orientation for this specific page
-
-                    if($fileorientation !== 'A') {  // If an orientation was provided for the whole document, use it
-                        $pageOrientation = $fileorientation;
-                    }
-                    $fpdi->AddPage($pageOrientation, array($size['width'], $size['height']));
-                    $fpdi->useTemplate($template);
+                    $this->_addTemplatePage($fpdi, $template, $fileOrientation);
                 }
             } else {
-                foreach ($filepages as $page) {
+                foreach ($filePages as $page) {
                     if (!$template = $fpdi->importPage($page)) {
                         throw new Exception("Could not load page '$page' in PDF '$filename'. Check that the page exists.");
                     }
-                    $size = $fpdi->getTemplateSize($template);
-                    $pageOrientation = ($size['width'] > $size['height']) ? 'L' : 'P';  // Determine orientation for this specific page
-                    if($fileorientation !== 'A') {  // If an orientation was provided for the whole document, use it
-                        $pageOrientation = $fileorientation;
-                    }
-
-                    $fpdi->AddPage($pageOrientation, array($size['width'], $size['height']));
-                    $fpdi->useTemplate($template);
+                    $this->_addTemplatePage($fpdi, $template, $fileOrientation);
                 }
             }
         }
 
         //output operations
-        $mode = $this->_switchmode($outputmode);
+        $mode = $this->_switchMode($outMode);
 
         if ($mode == 'S') {
-            return $fpdi->Output($outputpath, 'S');
+            return $fpdi->Output($outPath, 'S');
         } else {
-            if ($fpdi->Output($outputpath, $mode) == '') {
+            if ($fpdi->Output($outPath, $mode) == '') {
                 return true;
             } else {
-                throw new Exception("Error outputting PDF to '$outputmode'.");
-                return false;
+                throw new Exception("Error outputting PDF to '$outMode'.");
             }
         }
-
-
     }
 
     /**
      * FPDI uses single characters for specifying the output location. Change our more descriptive string into proper format.
-     * @param $mode
-     * @return Character
+     * @param string $mode
+     * @return string
      */
-    private function _switchmode($mode)
+    private function _switchMode($mode)
     {
-        switch(strtolower($mode))
+        switch(strtolower($mode ?? ''))
         {
             case 'download':
                 return 'D';
-                break;
-            case 'browser':
-                return 'I';
-                break;
             case 'file':
                 return 'F';
-                break;
             case 'string':
                 return 'S';
-                break;
+            case 'browser':
             default:
                 return 'I';
-                break;
         }
     }
 
     /**
      * Takes our provided pages in the form of 1,3,4,16-50 and creates an array of all pages
-     * @param $pages
-     * @return unknown_type
+     * @param string $pages
+     * @return array
+     * @throws Exception
      */
-    private function _rewritepages($pages)
+    private function _rewritePages($pages)
     {
-        $pages = str_replace(' ', '', $pages);
-        $part = explode(',', $pages);
+        $pages = str_replace(' ', '', $pages ?? '');
+        $part = explode(',', $pages ?? '');
 
         //parse hyphens
+        $newPages = [];
         foreach ($part as $i) {
             $ind = explode('-', $i);
 
@@ -169,19 +149,37 @@ class PDFMerger
 
                 if ($x > $y) {
                     throw new Exception("Starting page, '$x' is greater than ending page '$y'.");
-                    return false;
                 }
 
                 //add middle pages
                 while ($x <= $y) {
-                    $newpages[] = (int) $x;
+                    $newPages[] = (int) $x;
                     $x++;
                 }
             } else {
-                $newpages[] = (int) $ind[0];
+                $newPages[] = (int) $ind[0];
             }
         }
 
-        return $newpages;
+        return $newPages;
+    }
+
+    /**
+     * Helper method to add a template page to the FPDI object with correct orientation and size.
+     * @param Fpdi $fpdi
+     * @param int $template
+     * @param string $fileOrientation
+     * @return void
+     */
+    private function _addTemplatePage($fpdi, $template, $fileOrientation)
+    {
+        $size = $fpdi->getTemplateSize($template);
+        $pageOrientation = ($size['width'] > $size['height']) ? 'L' : 'P';  // Determine orientation for this specific page
+
+        if($fileOrientation !== 'A') {  // If an orientation was provided for the whole document, use it
+            $pageOrientation = $fileOrientation;
+        }
+        $fpdi->AddPage($pageOrientation, array($size['width'], $size['height']));
+        $fpdi->useTemplate($template);
     }
 }
